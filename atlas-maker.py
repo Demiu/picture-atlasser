@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from typing import List, Union, Optional, Tuple
 from PIL import Image, ImageColor
+import glob
+import os
 
 # 2d bsp tree branch
 # divides branch's space into two subrectangles with a (vertical or horizontal) line 
@@ -248,11 +250,59 @@ def tree_into_image(tree: Branch, width: int, height: int):
     
     return dest
 
-if __name__ == "__main__":
-    imgs = []
+def load_file_list(files: List[str]):
+    images = []
+    for f in files:
+        try:
+            i = Image.open(f)
+            images.append(i)
+            print("Loaded %s" % f)
+        except IOError:
+            print("Can't load %s, skipping..." % f) 
+    return images
+
+def load_directory(path: str):
+    path = os.path.join(path, '*')
+    files = glob.glob(path, recursive=True)
+    return load_file_list(files)
+
+def load_file(path: str):
+    try:
+        i = Image.open(path)
+        print("Loaded %s" % path)
+        return i
+    except IOError:
+        print("Can't load %s, skipping..." % path) 
+
+def load(path: str):
+    images = []
+
+    if os.path.isdir(path):
+        images.extend(load_directory(path))
+    elif os.path.isfile(path):
+        images.append(load_file(path))
+    else:
+        paths = glob.glob(path)
+        for p in paths:
+            images.extend(load(p))
+    
+    return images
+
+def main():
+    loadfrom = ''
+
+    imgs = load(loadfrom)
+
+    if len(imgs) == 0:
+        print("No images were loaded! Wrong path? Or maybe they are unsupported format")
+        return
     
     tree, w, h = generate_tree(imgs)
 
     result = tree_into_image(tree, w, h)
 
     result.show()
+
+
+if __name__ == "__main__":
+    main()
