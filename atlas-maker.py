@@ -1,17 +1,22 @@
+from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Union, Optional, Tuple
 from PIL import Image, ImageColor
+import argparse
 import glob
+import math
 import os
+
+verbose = False
 
 # 2d bsp tree branch
 # divides branch's space into two subrectangles with a (vertical or horizontal) line 
 @dataclass
 class Branch:
     # thing occupying the branch's space left (or up) of this branch's divisor
-    left = None
+    left: Union[Branch, Image.Image, None] = None
     # thing occupying the branch's space right (or down) of this branch's divisor
-    right = None
+    right: Union[Branch, Image.Image, None] = None
     # vertical or horizontal offset of this branch's divisor from the start (left top) of this branch
     offset: int = 0
 
@@ -19,7 +24,7 @@ class Branch:
 @dataclass
 class BranchTraverseNode:
     # the branch associated with this traverse node
-    branch: Branch = None
+    branch: Optional[Branch] = None
     # TOTAL x offset of this subBranch, aka sum of all offsets of parent branches of branch with is_height false
     offsetx: int = 0
     # TOTAL y offset of this subBranch, aka sum of all offsets of parent branches of branch with is_height true
@@ -28,7 +33,7 @@ class BranchTraverseNode:
     goes_left: bool = True
 
 # inserts img into root tree, returns tree and either two zeroes if it inserted or smallest values of missing width and height
-def insert_into_tree(root: Optional[Branch], maxw: int, maxh: int, img: Image) -> Tuple[Optional[Branch], int, int]:
+def insert_into_tree(root: Optional[Branch], maxw: int, maxh: int, img: Image.Image) -> Tuple[Optional[Branch], int, int]:
     # if this is the first insertion, it's a simple insertion
     if root == None:
         missingw = img.width - maxw
@@ -173,27 +178,138 @@ def insert_into_tree(root: Optional[Branch], maxw: int, maxh: int, img: Image) -
         parent.right.left.left = img
         return root, 0, 0
     
-    # we have reached the end of the tree, this sized rect cant fill this root and a new image
+    # we have reached the end of the tree, (maxw, maxh) sized rect cant fill this root and a new image
+
     # fix edge cases for missing widths (eg. a fully filled rect will have those still at 0)
     missingw = min(missingw, img.width) if missingw != 0 else img.width
     missingh = min(missingh, img.height) if missingh != 0 else img.height
 
+    # return unchanged root and how much we're (approximately) missing in each direction
     return root, missingw, missingh
 
-def generate_tree(images):
+def guess_size(images: List[Image.Image], pow2: bool, sq: bool):
+    # minimum widths and heights for the size (from maximums of images)
+    minw = 0
+    minh = 0
+    total_px = 0
+
+    for img in images:
+        minw = img.width if minw == 0 else max(minw, img.width)
+        minh = img.height if minh == 0 else max(minh, img.height)
+        total_px += img.width + img.height
+    
+    if pow2:
+        if sq:
+            # square of power 2
+            bigger = max(minh, minw) # we cant fit in smaller side, giess from bigger
+            guess = 2 ** int(math.ceil(math.sqrt(bigger)))
+            # expand until we can fit
+            while (guess * guess) < total_px:
+                guess *= 2
+            # we expanded enough
+            return guess, guess 
+        else:
+            # rect of power 2
+            w = 2 ** int(math.ceil(math.sqrt(minw)))
+            h = 2 ** int(math.ceil(math.sqrt(minh)))
+            # expand until we can fit, proritizing smallest side
+            while (w * h) < total_px:
+                if w > h:
+                    h *= 2
+                else:
+                    w *= 2
+            return w, h
+    else:
+        if sq:
+            # square
+            # minimum sides' sqrts to fit all pixels and image width/height requirements, respectively
+            from_total = int(math.ceil(math.sqrt(math.sqrt(total_px)))) # double sqrt since it's area
+            from_mins = int(math.ceil(math.sqrt(max(minw, minh))))
+            if from_mins > from_total:
+                # if we'd use from_total sides would be too short
+                return 2**from_mins, 2**from_mins
+            else:
+                return 2**from_total
+        else:
+            # rect
+            # simple minimums check
+            if (minw * minh) >= total_px:
+                return minw, minh
+            
+            squareish_side = int(math.ceil(math.sqrt(total_px)))
+            if minw > minh:
+                final_side = max(squareish_side, minw)
+                return final_side, final_side
+            else:
+                final_side = max(squareish_side, minh)
+                return final_side, final_side
+
+def next_best_size(w: int, h: int, pow2: bool, sq: bool, missw: int, missh: int):
+    if pow2:
+        if sq:
+            # square of power 2
+            needed_powerw = int(math.ceil(math.sqrt(w + missw)))
+            needed_powerh = int(math.ceil(math.sqrt(h + missh)))
+            if needed_powerh > needed_powerw:
+                return 2**needed_powerw, 2**needed_powerw
+            else:
+                return 2**needed_powerh, 2**needed_powerh
+        else:
+            # rect of power 2
+            needed_powerw = int(math.ceil(math.sqrt(w + missw)))
+            needed_powerh = int(math.ceil(math.sqrt(h + missh)))
+            new_pixelsw = (2**needed_powerw) * h
+            new_pixelsh = (2**needed_powerh) * w
+            if new_pixelsw > new_pixelsh:
+                return w, (2**needed_powerh)
+            else:
+                return (2**needed_powerw), h
+    else:
+        if sq:
+            # square
+            # how many new pixels will be created if we expand the width by missw, and vice-versa
+            # the num of pixel isn't accurate, but they are correct for comparassions
+            new_pixelsw = h * missw 
+            new_pixelsh = w * missh
+            if new_pixelsw > new_pixelsh:
+                return w, (h + missh)
+            else:
+                return (w + missw), h
+        else:
+            # just a rect
+            new_pixelsw = missw * h
+            new_pixelsh = missh * w
+            if new_pixelsw > new_pixelsh:
+                return w, (h + missh)
+            else:
+                return (w + missw), h
+
+def generate_tree(images: List[Image.Image], pow2: bool, sq: bool):
+    if verbose:
+        print("Generating tree...")
+    
     images.sort(key=lambda img: img.height)
 
-    testw = 600
-    testh = 600
+    w, h = guess_size(images, pow2, sq)
+    if verbose:
+        print("Initial guess of a (%d, %d) rectangle" % (w, h))
+
     images_left = images.copy()
     tree = None
     while images_left:
         image = images_left.pop()
-        tree, missx, missy = insert_into_tree(tree, testw, testh, image)
+        tree, missx, missy = insert_into_tree(tree, w, h, image)
         if missx != 0 or missy != 0:
-            print("melon")
+            w, h = next_best_size(w, h, pow2, sq, missx, missy)
+            images_left = images.copy()
+            tree = None
+            if verbose:
+                print("Rect too small by (%d, %d), expanded to (%d, %d)" % (missx, missy, w, h))
 
-    return tree, testw, testh
+    if verbose:
+        print("Done generating tree!")
+
+    return tree, w, h
 
 def tree_into_image(tree: Branch, width: int, height: int):
     dest = Image.new('RGBA', (width, height), ImageColor.getrgb('#00000000'))
@@ -258,7 +374,8 @@ def load_file_list(files: List[str]):
             images.append(i)
             print("Loaded %s" % f)
         except IOError:
-            print("Can't load %s, skipping..." % f) 
+            if verbose:
+                print("Can't load %s, skipping..." % f) 
     return images
 
 def load_directory(path: str):
@@ -272,7 +389,9 @@ def load_file(path: str):
         print("Loaded %s" % path)
         return i
     except IOError:
-        print("Can't load %s, skipping..." % path) 
+        if verbose:
+            print("Can't load %s, skipping..." % path)
+    return None
 
 def load(path: str):
     images = []
@@ -280,7 +399,9 @@ def load(path: str):
     if os.path.isdir(path):
         images.extend(load_directory(path))
     elif os.path.isfile(path):
-        images.append(load_file(path))
+        i = load_file(path)
+        if i != None:
+            images.append(i)
     else:
         paths = glob.glob(path)
         for p in paths:
@@ -288,20 +409,55 @@ def load(path: str):
     
     return images
 
-def main():
-    loadfrom = ''
+def check_output(output: str):
+    try:
+        open(output, 'w')
+    except IOError:
+        print("%s could not be written! This might be due to permissions or an invalid path" % output)
+        return False
+    
+    if os.path.splitext(output)[1] == '':
+        print("%d doesn't have an extension!" % output)
+        return False
+    
+    return True
 
-    imgs = load(loadfrom)
+def parse_arguments():
+    parser = argparse.ArgumentParser(description="A simple program for packing multiple images together into an atlas")
+    parser.add_argument('-2', '--pow2', action='store_true', required=False, help="Output image's sides' length will be a power of 2")
+    parser.add_argument('-s', '--square', action='store_true', required=False, help="Output image will be a square")
+    parser.add_argument('-verbose', action='store_true', required=False, help="Verbose logging")
+    parser.add_argument('-o', '--output', required=True, help="Output image destination")
+    parser.add_argument('-i', '--input', required=True, nargs='+', help="Input image(s) path(s)")
+
+    args = parser.parse_args()
+    return args.pow2, args.square, args.verbose, args.output, args.input
+
+def main():
+    global verbose
+    pow2, sq, verbose, output, inputs = parse_arguments()
+
+    if not check_output(output):
+        exit()
+
+    imgs = []
+    for i in inputs:
+        imgs = load(i)
 
     if len(imgs) == 0:
         print("No images were loaded! Wrong path? Or maybe they are unsupported format")
         return
     
-    tree, w, h = generate_tree(imgs)
+    tree, w, h = generate_tree(imgs, pow2, sq)
 
     result = tree_into_image(tree, w, h)
 
-    result.show()
+    try:
+        result.save(output)
+    except ValueError:
+        print("Couldn't determine output format from file name")
+    except IOError:
+        print("Couldn't write to %s" % output)
 
 
 if __name__ == "__main__":
