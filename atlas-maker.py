@@ -196,13 +196,13 @@ def guess_size(images: List[Image.Image], pow2: bool, sq: bool):
     for img in images:
         minw = img.width if minw == 0 else max(minw, img.width)
         minh = img.height if minh == 0 else max(minh, img.height)
-        total_px += img.width + img.height
+        total_px += img.width * img.height
     
     if pow2:
         if sq:
             # square of power 2
             bigger = max(minh, minw) # we cant fit in smaller side, giess from bigger
-            guess = 2 ** int(math.ceil(math.sqrt(bigger)))
+            guess = 2 ** int(math.ceil(math.log2(bigger)))
             # expand until we can fit
             while (guess * guess) < total_px:
                 guess *= 2
@@ -210,8 +210,8 @@ def guess_size(images: List[Image.Image], pow2: bool, sq: bool):
             return guess, guess 
         else:
             # rect of power 2
-            w = 2 ** int(math.ceil(math.sqrt(minw)))
-            h = 2 ** int(math.ceil(math.sqrt(minh)))
+            w = 2 ** int(math.ceil(math.log2(minw)))
+            h = 2 ** int(math.ceil(math.log2(minh)))
             # expand until we can fit, proritizing smallest side
             while (w * h) < total_px:
                 if w > h:
@@ -222,14 +222,14 @@ def guess_size(images: List[Image.Image], pow2: bool, sq: bool):
     else:
         if sq:
             # square
-            # minimum sides' sqrts to fit all pixels and image width/height requirements, respectively
-            from_total = int(math.ceil(math.sqrt(math.sqrt(total_px)))) # double sqrt since it's area
-            from_mins = int(math.ceil(math.sqrt(max(minw, minh))))
+            # minimum side to fit all pixels and image width/height requirements, respectively
+            from_total = int(math.ceil(math.sqrt(total_px)))
+            from_mins = max(minw, minh)
             if from_mins > from_total:
                 # if we'd use from_total sides would be too short
-                return 2**from_mins, 2**from_mins
+                return from_mins, from_mins
             else:
-                return 2**from_total
+                return from_total, from_total
         else:
             # rect
             # simple minimums check
@@ -248,16 +248,16 @@ def next_best_size(w: int, h: int, pow2: bool, sq: bool, missw: int, missh: int)
     if pow2:
         if sq:
             # square of power 2
-            needed_powerw = int(math.ceil(math.sqrt(w + missw)))
-            needed_powerh = int(math.ceil(math.sqrt(h + missh)))
+            needed_powerw = int(math.ceil(math.log2(w + missw)))
+            needed_powerh = int(math.ceil(math.log2(h + missh)))
             if needed_powerh > needed_powerw:
                 return 2**needed_powerw, 2**needed_powerw
             else:
                 return 2**needed_powerh, 2**needed_powerh
         else:
             # rect of power 2
-            needed_powerw = int(math.ceil(math.sqrt(w + missw)))
-            needed_powerh = int(math.ceil(math.sqrt(h + missh)))
+            needed_powerw = int(math.ceil(math.log2(w + missw)))
+            needed_powerh = int(math.ceil(math.log2(h + missh)))
             new_pixelsw = (2**needed_powerw) * h
             new_pixelsh = (2**needed_powerh) * w
             if new_pixelsw > new_pixelsh:
@@ -273,16 +273,26 @@ def next_best_size(w: int, h: int, pow2: bool, sq: bool, missw: int, missh: int)
             new_pixelsh = w * missh
             if new_pixelsw > new_pixelsh:
                 return w, (h + missh)
-            else:
+            elif new_pixelsw < new_pixelsh:
                 return (w + missw), h
+            else:
+                if w > h:
+                    return w, (h + missh)
+                else:
+                    return (w + missw), h 
         else:
             # just a rect
             new_pixelsw = missw * h
             new_pixelsh = missh * w
             if new_pixelsw > new_pixelsh:
                 return w, (h + missh)
-            else:
+            elif new_pixelsw < new_pixelsh:
                 return (w + missw), h
+            else:
+                if w > h:
+                    return w, (h + missh)
+                else:
+                    return (w + missw), h
 
 def generate_tree(images: List[Image.Image], pow2: bool, sq: bool):
     if verbose:
@@ -453,6 +463,7 @@ def main():
     result = tree_into_image(tree, w, h)
 
     try:
+        print("Saving to %s" % output)
         result.save(output)
     except ValueError:
         print("Couldn't determine output format from file name")
