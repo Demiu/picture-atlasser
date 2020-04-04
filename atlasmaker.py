@@ -443,7 +443,10 @@ def parse_arguments():
     args = parser.parse_args()
     return args.pow2, args.square, args.verbose, args.output, args.input
 
-def main(pow2, sq, verbose, output, inputs):
+def main(pow2, sq, in_verbose, output, inputs):
+    global verbose
+    verbose = in_verbose
+	
     if not check_output(output):
         exit()
 
@@ -469,6 +472,5 @@ def main(pow2, sq, verbose, output, inputs):
 
 
 if __name__ == "__main__":
-	global verbose
     pow2, sq, verbose, output, inputs = parse_arguments()
     main(pow2, sq, verbose, output, inputs)
